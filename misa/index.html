@@ -206,102 +206,61 @@ window.WA_NUMBER = "573148966591";
   if ($('inc')) $('inc').addEventListener('click', function () { guests = Math.min(4, guests + 1); renderRsvp(); });
   renderRsvp();
 
-  // ---- Música ambiente sintetizada ----
-  var ctx = null, master = null, bus = null, seq = null, on = false, step = 0, nextChord = 0, nextBell = 0, cur = null;
-  var chords = [
-    { pad: [130.81, 164.81, 196.00, 293.66], pent: [523.25, 587.33, 659.25, 783.99, 880.00] },
-    { pad: [110.00, 164.81, 196.00, 261.63], pent: [440.00, 523.25, 659.25, 783.99] },
-    { pad: [87.31, 130.81, 220.00, 329.63], pent: [523.25, 659.25, 698.46, 880.00] },
-    { pad: [98.00, 146.83, 246.94, 329.63], pent: [587.33, 783.99, 987.77, 659.25] }
-  ];
-  function pad_(f, t, dur) {
-    [-4, 4].forEach(function (cents) {
-      var o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.value = f; o.detune.value = cents;
-      var g = ctx.createGain();
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.linearRampToValueAtTime(0.035, t + 2.5);
-      g.gain.linearRampToValueAtTime(0.0001, t + dur);
-      o.connect(g); g.connect(bus); o.start(t); o.stop(t + dur + 0.1);
-    });
-  }
-  function bell(f, t) {
-    [[1, 0.06], [2, 0.015]].forEach(function (p) {
-      var o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = f * p[0];
-      var g = ctx.createGain();
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(p[1], t + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 3);
-      o.connect(g); g.connect(bus); o.start(t); o.stop(t + 3.1);
-    });
-  }
-  function schedule() {
-    if (!ctx || !on) return;
-    var horizon = ctx.currentTime + 1.2;
-    while (nextChord < horizon) {
-      var ch = chords[step % 4]; step++;
-      ch.pad.forEach(function (f, i) { pad_(f, nextChord + i * 0.12, 9); });
-      cur = ch; nextChord += 8;
-    }
-    while (nextBell < horizon) {
-      var c = cur || chords[0];
-      bell(c.pent[Math.floor(Math.random() * c.pent.length)], nextBell);
-      nextBell += 0.8 + Math.random() * 1.1;
-    }
-  }
+  // ---- Música (archivo MP3 en bucle) ----
+  var audio = new Audio('../musica.mp3');
+  audio.loop = true; audio.preload = 'auto'; audio.volume = 0;
+  var TARGET = 0.7, fadeT = null, wantOn = false, userMuted = false;
   function setUi() {
     var b = $('music-btn'); if (!b) return;
+    var on = !audio.paused;
     b.setAttribute('aria-label', on ? 'Silenciar la música' : 'Activar la música');
     b.setAttribute('aria-pressed', on ? 'true' : 'false');
     if ($('music-off')) $('music-off').style.display = on ? 'none' : 'contents';
   }
-  function start() {
-    try {
-      var AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return false;
-      if (!ctx) {
-        ctx = new AC();
-        master = ctx.createGain(); master.gain.value = 0;
-        var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2600;
-        var len = Math.floor(ctx.sampleRate * 3.2);
-        var buf = ctx.createBuffer(2, len, ctx.sampleRate);
-        for (var c = 0; c < 2; c++) { var d = buf.getChannelData(c); for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.6); }
-        var conv = ctx.createConvolver(); conv.buffer = buf;
-        var wet = ctx.createGain(); wet.gain.value = 0.55;
-        var dry = ctx.createGain(); dry.gain.value = 0.6;
-        bus = ctx.createGain();
-        bus.connect(dry); bus.connect(conv); conv.connect(wet);
-        dry.connect(lp); wet.connect(lp); lp.connect(master); master.connect(ctx.destination);
-      }
-      ctx.resume();
-      var t = ctx.currentTime;
-      master.gain.cancelScheduledValues(t);
-      master.gain.setValueAtTime(master.gain.value, t);
-      master.gain.linearRampToValueAtTime(0.9, t + 3);
-      on = true;
-      if (!seq) { nextChord = t + 0.1; nextBell = t + 1.5; seq = setInterval(schedule, 400); schedule(); }
-      setUi();
-      return true;
-    } catch (e) { return false; }
+  function fadeTo(v, ms, done) {
+    if (fadeT) clearInterval(fadeT);
+    var from = audio.volume, t0 = Date.now();
+    fadeT = setInterval(function () {
+      var k = Math.min(1, (Date.now() - t0) / ms);
+      audio.volume = Math.max(0, Math.min(1, from + (v - from) * k));
+      if (k >= 1) { clearInterval(fadeT); fadeT = null; if (done) done(); }
+    }, 50);
   }
-  function halt() {
-    on = false;
-    if (seq) { clearInterval(seq); seq = null; }
-    if (ctx) {
-      var t = ctx.currentTime;
-      master.gain.cancelScheduledValues(t);
-      master.gain.setValueAtTime(master.gain.value, t);
-      master.gain.linearRampToValueAtTime(0, t + 0.6);
-      setTimeout(function () { if (!on) { try { ctx.suspend(); } catch (e) {} } }, 800);
-    }
-    setUi();
+  function play() {
+    wantOn = true;
+    var p = audio.play();
+    if (p && p.then) {
+      p.then(function () { fadeTo(TARGET, 2500); setUi(); })
+       .catch(function () { setUi(); });   // el navegador lo bloqueó: se activará al primer toque
+    } else { fadeTo(TARGET, 2500); setUi(); }
   }
-  var touched = false;
-  if ($('open-btn')) $('open-btn').addEventListener('click', function () { if (!on && !touched) { touched = true; start(); } });
-  if ($('music-btn')) $('music-btn').addEventListener('click', function () { touched = true; if (on) halt(); else start(); });
+  function stop() {
+    wantOn = false;
+    fadeTo(0, 500, function () { audio.pause(); setUi(); });
+  }
+  audio.addEventListener('play', setUi);
+  audio.addEventListener('pause', setUi);
+
+  // 1) Intentar sonar apenas se abre la página
+  play();
+  // 2) Si el navegador lo bloqueó, sonar al primer toque en cualquier parte
+  function firstTouch(e) {
+    if (userMuted || !audio.paused) { removeListeners(); return; }
+    if (e && e.target && e.target.closest && e.target.closest('#music-btn')) return;  // el botón ♪ lo maneja solo
+    play();
+  }
+  var evts = ['pointerdown', 'touchstart', 'click', 'keydown'];
+  function removeListeners() { evts.forEach(function (n) { document.removeEventListener(n, firstTouch, true); }); }
+  evts.forEach(function (n) { document.addEventListener(n, firstTouch, true); });
+  audio.addEventListener('playing', removeListeners);
+
+  if ($('open-btn')) $('open-btn').addEventListener('click', function () { if (audio.paused && !userMuted) play(); });
+  if ($('music-btn')) $('music-btn').addEventListener('click', function () {
+    if (audio.paused) { userMuted = false; play(); } else { userMuted = true; stop(); }
+  });
   document.addEventListener('visibilitychange', function () {
-    if (!ctx) return;
-    if (document.hidden) { try { ctx.suspend(); } catch (e) {} }
-    else if (on) { try { ctx.resume(); } catch (e) {} }
+    if (document.hidden) { if (!audio.paused) audio.pause(); }
+    else if (wantOn && !userMuted) { audio.play().catch(function () {}); }
   });
   setUi();
 })();
